@@ -1,70 +1,99 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, Tuple
 
 
 class Bridge:
-    """Formats element snapshots for the reasoning model and computes turn diffs."""
+    """Formats snapshots and diffs with stable IDs across turns."""
 
     def __init__(self) -> None:
-        self.prev_elements: Dict[int, dict] = {}
+        self.prev_snapshot: Dict[int, dict] = {}
 
-    def format_snapshot(self, elements: Iterable[dict], window_title: str) -> Tuple[str, Dict[int, dict]]:
-        indexed = self._index_elements(elements)
-        lines: List[str] = [f"WINDOW: {window_title}"]
+    def format_snapshot(self, elements: Iterable[dict], window_title: str) -> str:
+        current: Dict[int, dict] = {}
+        lines = [f"WINDOW: {window_title}"]
 
-        for i, el in indexed.items():
-            etype = self._classify(el.get("type", ""))
-            name = str(el.get("name", "")).replace('"', "'")
-            x, y = int(el.get("x", 0)), int(el.get("y", 0))
-            lines.append(f'[{i}] {etype} "{name}" ({x},{y})')
+        for i, raw in enumerate(elements, 1):
+            el = self._normalize(raw)
+            etype = self._classify(el["type"])
+            lines.append(f'[{i}] {etype} "{el["name"]}" ({el["x"]},{el["y"]})')
+            current[i] = el
 
-        self.prev_elements = indexed
-        return "\n".join(lines), indexed
+        self.prev_snapshot = current
+        return "\n".join(lines)
 
-    def format_diff(self, elements: Iterable[dict], window_title: str) -> Tuple[str, Dict[int, dict]]:
-        indexed = self._index_elements(elements)
-        current_signatures = {idx: self._signature(el) for idx, el in indexed.items()}
-        previous_signatures = {idx: self._signature(el) for idx, el in self.prev_elements.items()}
+    def format_diff(self, elements: Iterable[dict], window_title: str) -> str:
+        curr_by_key: Dict[Tuple[str, str, int, int], dict] = {}
+        ordered_keys: list[Tuple[str, str, int, int]] = []
+        for raw in elements:
+            el = self._normalize(raw)
+            key = self._element_key(el)
+            if key in curr_by_key:
+                continue
+            curr_by_key[key] = el
+            ordered_keys.append(key)
 
-        added = [idx for idx, sig in current_signatures.items() if sig not in previous_signatures.values()]
-        removed = [idx for idx, sig in previous_signatures.items() if sig not in current_signatures.values()]
+        prev_by_key: Dict[Tuple[str, str, int, int], tuple[int, dict]] = {}
+        for idx, prev_el in sorted(self.prev_snapshot.items()):
+            key = self._element_key(prev_el)
+            if key not in prev_by_key:
+                prev_by_key[key] = (idx, prev_el)
 
-        lines: List[str] = [f"WINDOW: {window_title}", "DIFF:"]
+        curr_keys = set(curr_by_key.keys())
+        prev_keys = set(prev_by_key.keys())
+        added = [key for key in ordered_keys if key not in prev_keys]
+        removed = [key for key in prev_keys if key not in curr_keys]
 
-        for i in added:
-            el = indexed[i]
-            etype = self._classify(el.get("type", ""))
-            name = str(el.get("name", "")).replace('"', "'")
-            x, y = int(el.get("x", 0)), int(el.get("y", 0))
-            lines.append(f'+ [{i}] {etype} "{name}" ({x},{y})')
+        if not added and not removed:
+            refreshed: Dict[int, dict] = {}
+            for key, (old_id, _) in prev_by_key.items():
+                refreshed[old_id] = curr_by_key[key]
+            self.prev_snapshot = refreshed
+            return "DIFF: no changes"
 
-        for old_idx in removed:
-            old_el = self.prev_elements[old_idx]
-            etype = self._classify(old_el.get("type", ""))
-            name = str(old_el.get("name", "")).replace('"', "'")
-            lines.append(f'- [{old_idx}] {etype} "{name}" removed')
+        lines = [f"WINDOW: {window_title}", "DIFF:"]
+        new_snapshot: Dict[int, dict] = {}
 
-        if len(lines) == 2:
-            lines.append("(no visible changes)")
+        shared_keys = [key for key in ordered_keys if key in prev_keys]
+        for key in sorted(shared_keys, key=lambda k: prev_by_key[k][0]):
+            old_id, _ = prev_by_key[key]
+            new_snapshot[old_id] = curr_by_key[key]
 
-        self.prev_elements = indexed
-        return "\n".join(lines), indexed
+        next_id = max(self.prev_snapshot.keys(), default=0)
+        for key in added:
+            el = curr_by_key[key]
+            next_id += 1
+            new_snapshot[next_id] = el
+            etype = self._classify(el["type"])
+            lines.append(f'+ [{next_id}] {etype} "{el["name"]}" ({el["x"]},{el["y"]})')
 
-    def _index_elements(self, elements: Iterable[dict]) -> Dict[int, dict]:
-        indexed: Dict[int, dict] = {}
-        for i, el in enumerate(elements, 1):
-            indexed[i] = {
-                "name": el.get("name", ""),
-                "type": el.get("type", ""),
-                "x": int(el.get("x", 0)),
-                "y": int(el.get("y", 0)),
-            }
-        return indexed
+        for key in sorted(removed, key=lambda k: prev_by_key[k][0]):
+            old_id, old_el = prev_by_key[key]
+            lines.append(f'- [{old_id}] "{old_el["name"]}" removed')
+
+        self.prev_snapshot = new_snapshot
+        return "\n".join(lines)
+
+    def get_elements(self) -> Dict[int, dict]:
+        return self.prev_snapshot
 
     @staticmethod
-    def _signature(el: dict) -> str:
-        return f"{el.get('type','')}|{el.get('name','')}|{el.get('x',0)}|{el.get('y',0)}"
+    def _normalize(el: dict) -> dict:
+        return {
+            "name": str(el.get("name", "")).replace('"', "'"),
+            "type": str(el.get("type", "")),
+            "x": int(el.get("x", 0)),
+            "y": int(el.get("y", 0)),
+        }
+
+    @staticmethod
+    def _element_key(el: dict) -> Tuple[str, str, int, int]:
+        return (
+            el["name"],
+            el["type"],
+            el["x"] // 100,
+            el["y"] // 100,
+        )
 
     @staticmethod
     def _classify(control_type: str) -> str:
@@ -78,5 +107,9 @@ class Bridge:
             "CheckBoxControl": "check",
             "ComboBoxControl": "select",
             "DocumentControl": "editor",
+            "button": "btn",
+            "textbox": "input",
+            "link": "link",
+            "menuitem": "menu",
         }
         return mapping.get(control_type, "el")

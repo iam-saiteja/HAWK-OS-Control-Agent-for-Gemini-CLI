@@ -1,4 +1,4 @@
-from hawk.gemini_ext import execute_action
+from hawk.executor import execute_action
 
 
 def test_execute_action_done() -> None:

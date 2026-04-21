@@ -1,6 +1,8 @@
 uiautomation
 screen-ocr[winrt]
-pyautogui
 mss
 websockets
+pyautogui
+pyperclip
+google-generativeai
 pytest
