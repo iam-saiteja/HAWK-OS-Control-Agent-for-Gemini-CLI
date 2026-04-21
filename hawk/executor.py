@@ -23,13 +23,19 @@ def execute_action(action: str, elements: dict) -> bool:
                 pyautogui.click(el["x"], el["y"])
 
         elif cmd == "type":
-            el = _get_element(parts, elements)
-            if el and len(parts) >= 3:
+            if len(parts) >= 3 and parts[1] == "0":
                 text = " ".join(parts[2:])
-                pyautogui.click(el["x"], el["y"])
-                time.sleep(0.15)
+                time.sleep(0.2)
                 pyperclip.copy(text)
                 pyautogui.hotkey("ctrl", "v")
+            else:
+                el = _get_element(parts, elements)
+                if el and len(parts) >= 3:
+                    text = " ".join(parts[2:])
+                    pyautogui.click(el["x"], el["y"])
+                    time.sleep(0.15)
+                    pyperclip.copy(text)
+                    pyautogui.hotkey("ctrl", "v")
 
         elif cmd == "key":
             if len(parts) >= 2:
@@ -38,6 +44,17 @@ def execute_action(action: str, elements: dict) -> bool:
                     pyautogui.press(keys[0])
                 else:
                     pyautogui.hotkey(*keys)
+
+        elif cmd == "launch":
+            if len(parts) >= 2:
+                app_name = " ".join(parts[1:])
+                pyautogui.press("win")
+                time.sleep(0.5)
+                pyperclip.copy(app_name)
+                pyautogui.hotkey("ctrl", "v")
+                time.sleep(0.5)
+                pyautogui.press("enter")
+                time.sleep(3.5)  # Wait for the heavy UI to open
 
         elif cmd == "scroll":
             el = _get_element(parts, elements)

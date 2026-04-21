@@ -22,12 +22,16 @@ def run(task: str, max_turns: int = 25, settle_seconds: float = 0.8) -> None:
     while turn < max_turns:
         window_title, elements = get_screen_state()
 
-        if not elements:
+        empty_retries = 0
+        while not elements and empty_retries < 3:
             print("[hawk] No elements found, retrying...")
             time.sleep(1)
-            continue
+            window_title, elements = get_screen_state()
+            empty_retries += 1
 
-        if turn == 0:
+        if not elements:
+            snapshot = "WINDOW: Unknown\\nDIFF: No elements detected. (Blind typing allowed: type 0 <text>)"
+        elif turn == 0:
             snapshot = bridge.format_snapshot(elements, window_title)
         else:
             snapshot = bridge.format_diff(elements, window_title)
