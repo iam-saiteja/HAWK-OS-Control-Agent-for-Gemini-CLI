@@ -1,0 +1,6 @@
+uiautomation
+screen-ocr[winrt]
+pyautogui
+mss
+websockets
+pytest
