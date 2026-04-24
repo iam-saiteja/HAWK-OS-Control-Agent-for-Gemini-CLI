@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Any, List, Dict
+from urllib.parse import quote_plus
 
 try:
     import ollama
@@ -26,6 +27,7 @@ RULES & CONTEXT:
 2. Useful keys include: `win`, `enter`, `esc`, `tab`, `ctrl+c`, etc.
 3. Output ONLY ONE single command line. No reasoning, no thoughts.
 4. DO NOT use element names or coordinates, only the integer ID. `0` is allowed for blind typing.
+5. Use `done` ONLY when the whole user task is complete. If you just launched an app for a multi-step task, continue with the next step.
 
 Example outputs:
 launch notepad
@@ -35,19 +37,82 @@ done
 """
 
 _VALID_PATTERNS = (
-    re.compile(r"click\s+\d+", re.IGNORECASE),
-    re.compile(r"type\s+\d+\s+.+", re.IGNORECASE),
-    re.compile(r"key\s+[^\s]+", re.IGNORECASE),
-    re.compile(r"scroll\s+\d+\s+(?:up|down)", re.IGNORECASE),
-    re.compile(r"launch\s+.+", re.IGNORECASE),
-    re.compile(r"done", re.IGNORECASE),
+    re.compile(r"^click\s+\d+$", re.IGNORECASE),
+    re.compile(r"^type\s+\d+\s+.+$", re.IGNORECASE),
+    re.compile(r"^key\s+[^\s]+$", re.IGNORECASE),
+    re.compile(r"^scroll\s+\d+\s+(?:up|down)$", re.IGNORECASE),
+    re.compile(r"^launch\s+.+$", re.IGNORECASE),
+    re.compile(r"^done$", re.IGNORECASE),
 )
 
 _chat_history: List[Dict[str, str]] = []
+_pending_actions: List[str] = []
+_resolved_model: str | None = None
+_PREFERRED_DEFAULT_MODEL = "qwen2:7b"
+_FALLBACK_MODELS = ("llama2:7b", "gemma3:1b")
+_BROWSER_HINTS = ("brave", "chrome", "edge", "firefox", "opera", "browser")
+_SITE_SEARCH_TARGETS = ("youtube", "google", "github", "wikipedia")
+
+
+def _list_installed_models() -> list[str]:
+    if ollama is None:
+        return []
+
+    try:
+        payload = ollama.list()
+    except Exception:
+        return []
+
+    if isinstance(payload, dict):
+        models = payload.get("models", [])
+    elif isinstance(payload, list):
+        models = payload
+    else:
+        models = getattr(payload, "models", [])
+
+    names: list[str] = []
+    for model in models or []:
+        if isinstance(model, dict):
+            name = model.get("model") or model.get("name")
+        else:
+            name = getattr(model, "model", None) or getattr(model, "name", None)
+
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+
+    return names
 
 
 def _get_model() -> str:
-    return os.getenv("OLLAMA_MODEL", "qwen2:7b")
+    global _resolved_model
+
+    if _resolved_model:
+        return _resolved_model
+
+    configured_model = os.getenv("OLLAMA_MODEL", "").strip()
+    if configured_model:
+        _resolved_model = configured_model
+        return _resolved_model
+
+    installed = _list_installed_models()
+
+    if _PREFERRED_DEFAULT_MODEL in installed:
+        _resolved_model = _PREFERRED_DEFAULT_MODEL
+        return _resolved_model
+
+    for candidate in _FALLBACK_MODELS:
+        if candidate in installed:
+            print(f"[agent] OLLAMA_MODEL not set. Using installed model '{candidate}'.")
+            _resolved_model = candidate
+            return _resolved_model
+
+    if installed:
+        _resolved_model = installed[0]
+        print(f"[agent] OLLAMA_MODEL not set. Using first installed model '{_resolved_model}'.")
+        return _resolved_model
+
+    _resolved_model = _PREFERRED_DEFAULT_MODEL
+    return _resolved_model
 
 
 def _extract_action(reply: str) -> str:
@@ -56,8 +121,13 @@ def _extract_action(reply: str) -> str:
         if not line:
             continue
 
+        # Normalize common model formatting noise.
+        line = re.sub(r"\[(\d+)\]", r"\1", line)
+        line = re.sub(r"\s*\+\s*", "+", line)
+        line = re.sub(r"\s+", " ", line).strip()
+
         for pattern in _VALID_PATTERNS:
-            match = pattern.search(line)
+            match = pattern.match(line)
             if not match:
                 continue
 
@@ -73,9 +143,135 @@ def _extract_action(reply: str) -> str:
     return "done"
 
 
+def _normalize_task_text(task: str) -> str:
+    text = task.strip()
+    typo_rules = (
+        (r"\bbreave\b", "brave"),
+        (r"\byotube\b", "youtube"),
+        (r"\byou\s*tube\b", "youtube"),
+    )
+
+    for pattern, replacement in typo_rules:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _truncate_query_clause(query: str) -> str:
+    stop_patterns = (
+        r"\s*,\s*",
+        r"\s*;\s*",
+        r"\s+\.\s+",
+        r"\s+(?:and|then)\s+",
+        r"\s+(?:in|on)\s+(?:youtube|google|github|wikipedia)\s+search\b",
+    )
+
+    trimmed = query.strip()
+    for pattern in stop_patterns:
+        parts = re.split(pattern, trimmed, maxsplit=1, flags=re.IGNORECASE)
+        trimmed = parts[0].strip()
+
+    return re.sub(r"[.!?]+$", "", trimmed).strip()
+
+
+def _extract_site_search(task: str) -> tuple[str, str] | None:
+    task_text = _normalize_task_text(task)
+    patterns = (
+        r"\b(?:in|on)\s+(youtube|google|github|wikipedia)\s+search\s+(?:for\s+)?(.+)$",
+        r"\b(youtube|google|github|wikipedia)\s+search\s+(?:for\s+)?(.+)$",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, task_text, flags=re.IGNORECASE)
+        if not match:
+            continue
+
+        site = match.group(1).lower()
+        query = _truncate_query_clause(match.group(2).strip().strip('"').strip("'"))
+        if query:
+            return site, query
+
+    return None
+
+
+def _build_site_search_url(site: str, query: str) -> str | None:
+    encoded_query = quote_plus(query)
+    if site == "youtube":
+        return f"https://www.youtube.com/results?search_query={encoded_query}"
+    if site == "google":
+        return f"https://www.google.com/search?q={encoded_query}"
+    if site == "github":
+        return f"https://github.com/search?q={encoded_query}"
+    if site == "wikipedia":
+        return f"https://en.wikipedia.org/w/index.php?search={encoded_query}"
+
+    return None
+
+
+def _extract_search_query(task: str) -> str | None:
+    task_text = _normalize_task_text(task)
+    patterns = (
+        r"\bsearch\s+for\s+(.+)$",
+        r"\bsearch\s+(.+)$",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, task_text, flags=re.IGNORECASE)
+        if not match:
+            continue
+
+        query = _truncate_query_clause(match.group(1).strip().strip('"').strip("'"))
+        query = re.split(
+            r"\s+(?:in|on)\s+(?:brave|chrome|edge|firefox|opera|browser)\b",
+            query,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+
+        if query:
+            return query
+
+    return None
+
+
+def _should_plan_browser_search(task: str, action: str) -> bool:
+    if not action.lower().startswith("launch "):
+        return False
+
+    launched = action.split(maxsplit=1)[1].lower() if len(action.split(maxsplit=1)) > 1 else ""
+    task_lower = task.lower()
+    has_browser_hint = any(name in launched for name in _BROWSER_HINTS) or any(
+        name in task_lower for name in _BROWSER_HINTS
+    )
+
+    has_search_intent = _extract_site_search(task) is not None or _extract_search_query(task) is not None
+    return has_browser_hint and has_search_intent
+
+
+def _plan_post_launch_actions(task: str) -> List[str]:
+    site_search = _extract_site_search(task)
+    if site_search:
+        site, query = site_search
+        url = _build_site_search_url(site, query)
+        if url:
+            return ["key ctrl+l", f"type 0 {url}", "key enter"]
+
+    query = _extract_search_query(task)
+    if not query:
+        return []
+
+    # Deterministic browser flow: focus URL bar, type query, submit.
+    return ["key ctrl+l", f"type 0 {query}", "key enter"]
+
+
 def ask_agent(snapshot: str, task: str) -> str:
     """Send the snapshot to Ollama and return one validated action string."""
-    global _chat_history
+    global _chat_history, _pending_actions
+
+    if _pending_actions:
+        action = _pending_actions.pop(0)
+        print(f"[agent] Using planned follow-up action: {action}")
+        return action
     
     if ollama is None:
         print("[agent] Error: ollama package not installed. Run 'pip install ollama'.")
@@ -104,10 +300,29 @@ def ask_agent(snapshot: str, task: str) -> str:
         print("-" * 40)
         print(f"[DEBUG] Ollama response:\\n{reply_text}")
         print("-" * 40)
-        
-        return _extract_action(reply_text)
+
+        action = _extract_action(reply_text)
+        if _should_plan_browser_search(task, action):
+            # End the loop after deterministic browser-search sequence to avoid
+            # extra model-generated UI drift after query submission.
+            _pending_actions = _plan_post_launch_actions(task) + ["done"]
+            if _pending_actions:
+                print(
+                    "[agent] Planned browser follow-up actions "
+                    f"({len(_pending_actions) - 1} step(s) + done)."
+                )
+
+        return action
     except Exception as exc:
-        print(f"[agent] Ollama error: {exc}. Is the Ollama app running and model pulled?")
+        available_models = _list_installed_models()
+        if available_models:
+            available = ", ".join(available_models)
+            print(
+                f"[agent] Ollama error: {exc}. Available models: {available}. "
+                "Set OLLAMA_MODEL to one of the available models."
+            )
+        else:
+            print(f"[agent] Ollama error: {exc}. Is the Ollama app running and model pulled?")
         return "done"
 
 
@@ -146,5 +361,7 @@ Reply with exactly one word: CONTINUE, REPLAN, or DONE"""
 
 def reset_chat() -> None:
     """Reset chat history between tasks."""
-    global _chat_history
+    global _chat_history, _pending_actions, _resolved_model
     _chat_history = []
+    _pending_actions = []
+    _resolved_model = None
