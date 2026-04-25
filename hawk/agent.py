@@ -13,8 +13,14 @@ except ImportError:
 SYSTEM_PROMPT = """You are an automated desktop agent. You receive a list of screen elements formatted as '[ID] type "name" (x,y)'.
 
 Select the correct element ID to fulfill the user's task.
-Respond with EXACTLY ONE action for the immediate next step. DO NOT output a sequence of actions.
-Strictly use this format:
+Respond with EXACTLY ONE action for the immediate next step.
+Output contract (strict):
+1) Output exactly one single line.
+2) Do not output reasoning, explanations, markdown, code fences, bullets, or extra text.
+3) Do not output multiple actions.
+4) If you are uncertain, output a best single action from the allowed commands.
+
+Allowed formats:
   click <ID>
   type <ID> <text>
   key <combo>
@@ -48,10 +54,16 @@ _VALID_PATTERNS = (
 _chat_history: List[Dict[str, str]] = []
 _pending_actions: List[str] = []
 _resolved_model: str | None = None
-_PREFERRED_DEFAULT_MODEL = "qwen2:7b"
-_FALLBACK_MODELS = ("llama2:7b", "gemma3:1b")
+_PREFERRED_DEFAULT_MODEL = "qwen2.5:7b"
+_FALLBACK_MODELS = ("qwen2.5:3b", "gpt-oss:20b", "llama2:7b", "gemma3:1b")
+_MAX_CHAT_TURNS = 6
 _BROWSER_HINTS = ("brave", "chrome", "edge", "firefox", "opera", "browser")
 _SITE_SEARCH_TARGETS = ("youtube", "google", "github", "wikipedia")
+_WHATSAPP_HINTS = ("whatsapp",)
+
+
+def _is_debug_enabled() -> bool:
+    return os.getenv("HAWK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _list_installed_models() -> list[str]:
@@ -117,11 +129,21 @@ def _get_model() -> str:
 
 def _extract_action(reply: str) -> str:
     for raw_line in reply.splitlines():
-        line = raw_line.strip().replace("`", "").strip()
+        line = raw_line.strip()
+        if not line or line.startswith("```"):
+            continue
+
+        line = line.replace("`", "")
+        line = line.replace("**", "")
+        line = line.replace("__", "")
+        line = line.strip()
+        line = re.sub(r"^[-*+>]+\s*", "", line)
+        line = re.sub(r"^\d+[.)]\s*", "", line)
         if not line:
             continue
 
         # Normalize common model formatting noise.
+        line = re.sub(r"^\[(.+)\]$", r"\1", line)
         line = re.sub(r"\[(\d+)\]", r"\1", line)
         line = re.sub(r"\s*\+\s*", "+", line)
         line = re.sub(r"\s+", " ", line).strip()
@@ -147,6 +169,7 @@ def _normalize_task_text(task: str) -> str:
     text = task.strip()
     typo_rules = (
         (r"\bbreave\b", "brave"),
+        (r"\bfro\b", "for"),
         (r"\byotube\b", "youtube"),
         (r"\byou\s*tube\b", "youtube"),
     )
@@ -234,6 +257,48 @@ def _extract_search_query(task: str) -> str | None:
     return None
 
 
+def _extract_message_target(task: str) -> str | None:
+    task_text = _normalize_task_text(task)
+    patterns = (
+        r"\bsend\s+message\s+to\s+(.+?)\s+contact\b",
+        r"\bsend\s+message\s+to\s+(.+?)(?:\s*,|\s+message\s+content\b|$)",
+        r"\bsearch\s+for\s+contact\s*\(\s*(.+?)\s*\)",
+        r"\btext\s+(.+?)\s+contact\s+.+$",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, task_text, flags=re.IGNORECASE)
+        if not match:
+            continue
+
+        target = re.sub(r"\s+", " ", match.group(1).strip().strip('"').strip("'"))
+        if target:
+            return target
+
+    return None
+
+
+def _extract_message_content(task: str) -> str | None:
+    task_text = _normalize_task_text(task)
+    patterns = (
+        r"\bmessage\s+content\s*\(\s*(.+?)\s*\)",
+        r"\bmessage\s+content\s*[:=]\s*(.+)$",
+        r"\bmessage\s+content\s+(.+)$",
+        r"\btext\s+.+?\s+contact\s+(.+)$",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, task_text, flags=re.IGNORECASE)
+        if not match:
+            continue
+
+        content = re.sub(r"\s+", " ", match.group(1).strip().strip('"').strip("'"))
+        if content:
+            return content
+
+    return None
+
+
 def _should_plan_browser_search(task: str, action: str) -> bool:
     if not action.lower().startswith("launch "):
         return False
@@ -246,6 +311,23 @@ def _should_plan_browser_search(task: str, action: str) -> bool:
 
     has_search_intent = _extract_site_search(task) is not None or _extract_search_query(task) is not None
     return has_browser_hint and has_search_intent
+
+
+def _should_plan_whatsapp_message(task: str, action: str) -> bool:
+    if not action.lower().startswith("launch "):
+        return False
+
+    launched = action.split(maxsplit=1)[1].lower() if len(action.split(maxsplit=1)) > 1 else ""
+    task_lower = task.lower()
+    has_whatsapp_hint = any(name in launched for name in _WHATSAPP_HINTS) or any(
+        name in task_lower for name in _WHATSAPP_HINTS
+    )
+
+    return (
+        has_whatsapp_hint
+        and _extract_message_target(task) is not None
+        and _extract_message_content(task) is not None
+    )
 
 
 def _plan_post_launch_actions(task: str) -> List[str]:
@@ -264,6 +346,38 @@ def _plan_post_launch_actions(task: str) -> List[str]:
     return ["key ctrl+l", f"type 0 {query}", "key enter"]
 
 
+def _plan_whatsapp_post_launch_actions(task: str) -> List[str]:
+    target = _extract_message_target(task)
+    content = _extract_message_content(task)
+    if not target or not content:
+        return []
+
+    # WhatsApp desktop flow: open search, choose chat, type and send.
+    return ["key ctrl+f", f"type 0 {target}", "key enter", f"type 0 {content}", "key enter"]
+
+
+def _trim_chat_history(max_turns: int = _MAX_CHAT_TURNS) -> None:
+    global _chat_history
+
+    if not _chat_history:
+        return
+
+    if _chat_history[0].get("role") != "system":
+        return
+
+    max_non_system = max_turns * 2
+    non_system = _chat_history[1:]
+    if len(non_system) <= max_non_system:
+        return
+
+    _chat_history = [_chat_history[0], *non_system[-max_non_system:]]
+
+
+def _normalize_debug_reply(reply_text: str) -> str:
+    """Render escaped model newlines in logs for easier debugging."""
+    return reply_text.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+
 def ask_agent(snapshot: str, task: str) -> str:
     """Send the snapshot to Ollama and return one validated action string."""
     global _chat_history, _pending_actions
@@ -274,7 +388,10 @@ def ask_agent(snapshot: str, task: str) -> str:
         return action
     
     if ollama is None:
-        print("[agent] Error: ollama package not installed. Run 'pip install ollama'.")
+        print(
+            "[agent] Ollama is not installed or not running. "
+            "Please start Ollama and ensure your model is pulled."
+        )
         return "done"
 
     if not _chat_history:
@@ -287,6 +404,7 @@ def ask_agent(snapshot: str, task: str) -> str:
         
     message = f"Task: {task}\\n\\nYour Last Action: {last_action}\\n\\nScreen Snapshot:\\n{snapshot}"
     _chat_history.append({"role": "user", "content": message})
+    _trim_chat_history()
     
     try:
         response = ollama.chat(
@@ -296,21 +414,28 @@ def ask_agent(snapshot: str, task: str) -> str:
         )
         reply_text = response.get('message', {}).get('content', '')
         _chat_history.append({"role": "assistant", "content": reply_text})
+        _trim_chat_history()
         
-        print("-" * 40)
-        print(f"[DEBUG] Ollama response:\\n{reply_text}")
-        print("-" * 40)
+        if _is_debug_enabled():
+            print("-" * 40)
+            print(f"[DEBUG] Ollama response:\n{_normalize_debug_reply(reply_text)}")
+            print("-" * 40)
 
         action = _extract_action(reply_text)
+        planned_followups: List[str] = []
         if _should_plan_browser_search(task, action):
             # End the loop after deterministic browser-search sequence to avoid
             # extra model-generated UI drift after query submission.
-            _pending_actions = _plan_post_launch_actions(task) + ["done"]
-            if _pending_actions:
-                print(
-                    "[agent] Planned browser follow-up actions "
-                    f"({len(_pending_actions) - 1} step(s) + done)."
-                )
+            planned_followups = _plan_post_launch_actions(task)
+        elif _should_plan_whatsapp_message(task, action):
+            planned_followups = _plan_whatsapp_post_launch_actions(task)
+
+        if planned_followups:
+            _pending_actions = planned_followups + ["done"]
+            print(
+                "[agent] Planned deterministic follow-up actions "
+                f"({len(_pending_actions) - 1} step(s) + done)."
+            )
 
         return action
     except Exception as exc:

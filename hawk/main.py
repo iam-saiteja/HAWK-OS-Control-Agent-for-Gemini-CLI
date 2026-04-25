@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 import sys
 import time
 
@@ -7,6 +9,24 @@ from .agent import ask_agent, reset_chat, verify_progress
 from .bridge import Bridge
 from .executor import execute_action
 from .hawk import get_screen_state
+
+
+_BLIND_BOOTSTRAP_PATTERNS = (
+    re.compile(r"\bopen\b", re.IGNORECASE),
+    re.compile(r"\blaunch\b", re.IGNORECASE),
+)
+
+
+def _should_use_blind_bootstrap(task: str, turn: int) -> bool:
+    """Allow launch-style tasks to continue even if first perception is empty."""
+    if turn != 0:
+        return False
+
+    return any(pattern.search(task) for pattern in _BLIND_BOOTSTRAP_PATTERNS)
+
+
+def _is_debug_enabled() -> bool:
+    return os.getenv("HAWK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def run(task: str, max_turns: int = 25, settle_seconds: float = 0.8) -> None:
@@ -22,12 +42,17 @@ def run(task: str, max_turns: int = 25, settle_seconds: float = 0.8) -> None:
     while turn < max_turns:
         window_title, elements = get_screen_state()
 
-        empty_retries = 0
-        while not elements and empty_retries < 3:
-            print("[hawk] No elements found, retrying...")
-            time.sleep(1)
-            window_title, elements = get_screen_state()
-            empty_retries += 1
+        if not elements and _should_use_blind_bootstrap(task, turn):
+            if _is_debug_enabled():
+                print("[hawk] No elements detected yet; continuing with blind bootstrap for launch-style task.")
+        else:
+            empty_retries = 0
+            max_empty_retries = 5
+            while not elements and empty_retries < max_empty_retries:
+                print(f"[hawk] No elements found, retrying... ({empty_retries + 1}/{max_empty_retries})")
+                time.sleep(0.8)
+                window_title, elements = get_screen_state()
+                empty_retries += 1
 
         if not elements:
             snapshot = "WINDOW: Unknown\\nDIFF: No elements detected. (Blind typing allowed: type 0 <text>)"
@@ -54,6 +79,10 @@ def run(task: str, max_turns: int = 25, settle_seconds: float = 0.8) -> None:
         if not should_continue:
             print("[hawk] Task complete.")
             break
+
+        if action.lower().startswith("launch "):
+            print("[hawk] Waiting for launched app to fully render...")
+            time.sleep(2.5)
 
         turn += 1
         time.sleep(settle_seconds)

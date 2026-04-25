@@ -20,6 +20,15 @@ This file is the single source of truth for codebase-level changes in this repos
 - Notes: <optional>
 
 ## Change Log
+### 2026-04-24 | Branch: harish | Change: Add deterministic WhatsApp post-launch messaging flow
+- Type: Fix
+- Summary: Added task-intent parsing for WhatsApp message target/content and deterministic post-launch actions to search contact, open chat, type message, and send.
+- Files: hawk/agent.py, tests/test_agent.py, Project Tracking
+- Why: The workflow opened WhatsApp but often stopped before sending the message for prompts like "send message to <contact>, message content(<text>)".
+- Impact: WhatsApp launch tasks with explicit recipient and message content now continue through contact selection and message submission with a predictable action sequence.
+- Verification: Added parser/planner unit tests and ran full test suite with venv Python (22 passed).
+- Notes: Sequence uses Ctrl+F search in WhatsApp desktop and ends with Enter to send.
+
 ### 2026-04-24 | Branch: harish | Change: Add detailed model workflow documentation
 - Type: Docs
 - Summary: Added a dedicated end-to-end workflow document explaining startup, task input handling, snapshot/diff structuring, model interaction, intent parsing, execution, verifier flow, and stop conditions.

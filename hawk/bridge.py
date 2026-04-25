@@ -6,14 +6,17 @@ from typing import Dict, Iterable, Tuple
 class Bridge:
     """Formats snapshots and diffs with stable IDs across turns."""
 
+    _MAX_ELEMENTS = 30
+
     def __init__(self) -> None:
         self.prev_snapshot: Dict[int, dict] = {}
 
     def format_snapshot(self, elements: Iterable[dict], window_title: str) -> str:
         current: Dict[int, dict] = {}
         lines = [f"WINDOW: {window_title}"]
+        capped_elements = list(elements)[: self._MAX_ELEMENTS]
 
-        for i, raw in enumerate(elements, 1):
+        for i, raw in enumerate(capped_elements, 1):
             el = self._normalize(raw)
             etype = self._classify(el["type"])
             lines.append(f'[{i}] {etype} "{el["name"]}" ({el["x"]},{el["y"]})')
@@ -25,7 +28,8 @@ class Bridge:
     def format_diff(self, elements: Iterable[dict], window_title: str) -> str:
         curr_by_key: Dict[Tuple[str, str, int, int], dict] = {}
         ordered_keys: list[Tuple[str, str, int, int]] = []
-        for raw in elements:
+        capped_elements = list(elements)[: self._MAX_ELEMENTS]
+        for raw in capped_elements:
             el = self._normalize(raw)
             key = self._element_key(el)
             if key in curr_by_key:
