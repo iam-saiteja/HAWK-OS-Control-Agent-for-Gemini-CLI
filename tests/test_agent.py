@@ -15,6 +15,14 @@ from hawk.agent import (
 )
 
 
+def test_get_model_prefers_qwen_7b_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    monkeypatch.setattr(agent_module, "_resolved_model", None)
+    monkeypatch.setattr(agent_module, "_list_installed_models", lambda: [])
+
+    assert agent_module._get_model() == "qwen2:7b"
+
+
 def test_extract_first_valid_action() -> None:
     reply = """I will proceed now
 click 3

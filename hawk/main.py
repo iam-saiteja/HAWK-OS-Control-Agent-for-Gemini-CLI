@@ -29,15 +29,22 @@ def _is_debug_enabled() -> bool:
     return os.getenv("HAWK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def run(task: str, max_turns: int = 25, settle_seconds: float = 0.8) -> None:
+def run(
+    task: str,
+    max_turns: int = 25,
+    settle_seconds: float = 0.8,
+    focus_delay: float = 3.0,
+    empty_retry_delay: float = 0.8,
+    empty_retry_limit: int = 5,
+) -> None:
     bridge = Bridge()
     action_history: list[str] = []
     turn = 0
 
     reset_chat()
     print(f"[hawk] Task: {task}")
-    print("[hawk] Focusing target window in 3 seconds...")
-    time.sleep(3)
+    print(f"[hawk] Focusing target window in {focus_delay:.1f} seconds...")
+    time.sleep(focus_delay)
 
     while turn < max_turns:
         window_title, elements = get_screen_state()
@@ -47,10 +54,9 @@ def run(task: str, max_turns: int = 25, settle_seconds: float = 0.8) -> None:
                 print("[hawk] No elements detected yet; continuing with blind bootstrap for launch-style task.")
         else:
             empty_retries = 0
-            max_empty_retries = 5
-            while not elements and empty_retries < max_empty_retries:
-                print(f"[hawk] No elements found, retrying... ({empty_retries + 1}/{max_empty_retries})")
-                time.sleep(0.8)
+            while not elements and empty_retries < empty_retry_limit:
+                print(f"[hawk] No elements found, retrying... ({empty_retries + 1}/{empty_retry_limit})")
+                time.sleep(empty_retry_delay)
                 window_title, elements = get_screen_state()
                 empty_retries += 1
 

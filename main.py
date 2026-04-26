@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -38,9 +39,24 @@ def _rerun_with_venv_if_needed() -> None:
 
 _rerun_with_venv_if_needed()
 
+from hawk.gui import launch_gui
 from hawk.main import run
 
 
+_DEFAULT_TASK = "open notepad and type hello world"
+
+
+def _parse_args(argv: list[str]) -> tuple[bool, str]:
+    parser = argparse.ArgumentParser(description="HAWK desktop control agent")
+    parser.add_argument("--gui", action="store_true", help="launch the Tkinter frontend")
+    parser.add_argument("task", nargs="*", help="task to run in CLI mode or preload in the GUI")
+    parsed = parser.parse_args(argv)
+    return parsed.gui, " ".join(parsed.task).strip()
+
+
 if __name__ == "__main__":
-    task = " ".join(sys.argv[1:]) or "open notepad and type hello world"
-    run(task)
+    use_gui, task = _parse_args(sys.argv[1:])
+    if use_gui:
+        launch_gui(task or _DEFAULT_TASK)
+    else:
+        run(task or _DEFAULT_TASK)
