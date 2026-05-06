@@ -1,0 +1,84 @@
+# Project Tracking
+
+## Purpose
+This file is the single source of truth for codebase-level changes in this repository.
+
+## Update Policy
+- Append a new log entry whenever the assistant changes the codebase.
+- Include date, branch, changed files, reason, impact, and verification.
+- Keep entries chronological (newest first).
+- Use the template below for consistency.
+
+## Entry Template
+### YYYY-MM-DD | Branch: <branch-name> | Change: <short-title>
+- Type: Feature | Fix | Refactor | Docs | Test | Infra
+- Summary: <what changed>
+- Files: <comma-separated file list>
+- Why: <reason>
+- Impact: <behavioral impact>
+- Verification: <tests/checks run>
+- Notes: <optional>
+
+## Change Log
+### 2026-04-24 | Branch: harish | Change: Add deterministic WhatsApp post-launch messaging flow
+- Type: Fix
+- Summary: Added task-intent parsing for WhatsApp message target/content and deterministic post-launch actions to search contact, open chat, type message, and send.
+- Files: hawk/agent.py, tests/test_agent.py, Project Tracking
+- Why: The workflow opened WhatsApp but often stopped before sending the message for prompts like "send message to <contact>, message content(<text>)".
+- Impact: WhatsApp launch tasks with explicit recipient and message content now continue through contact selection and message submission with a predictable action sequence.
+- Verification: Added parser/planner unit tests and ran full test suite with venv Python (22 passed).
+- Notes: Sequence uses Ctrl+F search in WhatsApp desktop and ends with Enter to send.
+
+### 2026-04-24 | Branch: harish | Change: Add detailed model workflow documentation
+- Type: Docs
+- Summary: Added a dedicated end-to-end workflow document explaining startup, task input handling, snapshot/diff structuring, model interaction, intent parsing, execution, verifier flow, and stop conditions.
+- Files: HAWK_Model_Workflow_Detailed.md, Project Tracking
+- Why: User requested detailed documentation describing exactly how the model pipeline works from start to finish.
+- Impact: Improves onboarding clarity and makes debugging and future feature work easier by documenting the full runtime data flow.
+- Verification: Cross-checked documentation against current implementations in main.py, hawk/main.py, hawk/hawk.py, hawk/bridge.py, hawk/agent.py, and hawk/executor.py.
+- Notes: Documentation reflects the current Ollama-based architecture and browser-search deterministic planner behavior.
+
+### 2026-04-24 | Branch: harish | Change: Intent parser handles multi-clause search intent
+- Type: Feature
+- Summary: Upgraded parser to normalize common typos, extract site-specific search intent, and prefer deterministic URL-based search actions for multi-clause natural language tasks.
+- Files: hawk/agent.py, tests/test_agent.py, Project Tracking
+- Why: Commands like "open brave search for yotube, in youtube search bixi op" were interpreted as one long query instead of inferred user intent.
+- Impact: Browser search flows now better reflect user intent and support direct YouTube/Google/GitHub/Wikipedia search URLs from natural language.
+- Verification: Added parser regression tests and executed test suite with venv Python.
+- Notes: Action model remains in control for general tasks; deterministic planner now assists browser search intent.
+
+### 2026-04-24 | Branch: harish | Change: Continue browser search after launch
+- Type: Fix
+- Summary: Added deterministic follow-up actions for browser search tasks after `launch <app>` and tightened action parsing to avoid accidental early `done` matches.
+- Files: hawk/agent.py, tests/test_agent.py, Project Tracking
+- Why: The agent opened Brave but stopped before searching `youtube.com`.
+- Impact: Commands like "open brave and search for youtube.com" now continue with address-bar focus, query tenter, and Enter.
+- Verification: Added and ran agent unit tests; executed a live run command for browser search flow.
+- Notes: Follow-up automation is planned only for browser launch + search tasks.
+
+### 2026-04-23 | Branch: harish | Change: Root launcher auto-routes to .venv interpreter
+- Type: Fix
+- Summary: Updated root main.py to re-run with project .venv Python when launched from a non-venv interpreter.
+- Files: main.py, Project Tracking
+- Why: Running `python main.py` from a global interpreter failed with missing dependency errors (for example, pyautogui).
+- Impact: `python main.py` now uses the project environment automatically, reducing interpreter mismatch issues.
+- Verification: Re-ran using plain `python main.py` and verified execution routes through .venv and starts successfully.
+- Notes: Explicit direct calls to `.venv\Scripts\python.exe` continue to work unchanged.
+
+### 2026-04-23 | Branch: harish | Change: Auto fallback to installed Ollama model
+- Type: Fix
+- Summary: Updated agent model selection to automatically choose an installed local Ollama model when OLLAMA_MODEL is not set and the preferred default is unavailable.
+- Files: hawk/agent.py, Project Tracking
+- Why: Project run failed with model not found when qwen2:7b was missing from local Ollama models.
+- Impact: The app now starts and runs without requiring manual OLLAMA_MODEL override in common local setups.
+- Verification: Ran pytest (9 passed). Ran main.py with OLLAMA_MODEL cleared and confirmed normal execution using auto-selected llama2:7b.
+- Notes: Existing explicit OLLAMA_MODEL still takes priority.
+
+### 2026-04-23 | Branch: harish | Change: Add tracking and Ollama version document
+- Type: Docs
+- Summary: Added a persistent project tracking file and created the Ollama-version project documentation.
+- Files: Project Tracking, HAWK_Project(version-Ollama).md
+- Why: Establish explicit change history and document the post-Gemini Ollama architecture.
+- Impact: Improves maintainability, onboarding clarity, and change auditability.
+- Verification: Confirmed current branch is harish and reviewed current runtime modules (agent, bridge, executor, hawk, main).
+- Notes: Future assistant-driven changes should append entries here automatically.

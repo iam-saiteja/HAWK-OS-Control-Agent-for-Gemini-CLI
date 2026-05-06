@@ -43,3 +43,35 @@ def test_format_diff_bucket_stability() -> None:
     )
 
     assert diff == "DIFF: no changes"
+
+
+def test_format_snapshot_caps_elements_to_30() -> None:
+    bridge = Bridge()
+    elements = [
+        {"name": f"Item {i}", "type": "ButtonControl", "x": i, "y": i}
+        for i in range(1, 45)
+    ]
+
+    snapshot = bridge.format_snapshot(elements, "Overflow Window")
+
+    assert "[30] btn \"Item 30\" (30,30)" in snapshot
+    assert "Item 31" not in snapshot
+    assert len(bridge.get_elements()) == 30
+
+
+def test_format_diff_caps_new_elements_to_30() -> None:
+    bridge = Bridge()
+    initial = [
+        {"name": f"Old {i}", "type": "ButtonControl", "x": i, "y": i}
+        for i in range(1, 10)
+    ]
+    bridge.format_snapshot(initial, "Editor")
+
+    incoming = [
+        {"name": f"New {i}", "type": "ButtonControl", "x": i * 10, "y": i * 10}
+        for i in range(1, 50)
+    ]
+    diff = bridge.format_diff(incoming, "Editor")
+
+    assert "New 30" in diff
+    assert "New 31" not in diff

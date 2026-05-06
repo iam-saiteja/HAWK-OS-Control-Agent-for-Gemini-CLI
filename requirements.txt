@@ -4,5 +4,5 @@ mss
 websockets
 pyautogui
 pyperclip
-google-generativeai
+ollama
 pytest
